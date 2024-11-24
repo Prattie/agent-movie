@@ -1,0 +1,31 @@
+# Core dependencies
+llama-index>=0.10.0
+openai>=1.14.0
+streamlit>=1.32.0
+streamlit-chat>=0.1.1
+python-dotenv>=1.2.0
+pydantic>=2.7.0
+
+# Embeddings and vector storage
+sentence-transformers>=2.4.0
+chromadb>=0.5.0
+
+# Async support
+aiohttp>=3.10.0
+asyncio>=3.4.3
+
+# Data handling
+pandas>=2.3.0
+numpy>=1.26.5
+
+# Type hints and validation
+typing-extensions>=4.10.0
+
+# HTTP client
+requests>=2.32.0
+
+# Development tools
+black>=24.2.0
+pylint>=3.1.0
+pytest>=8.1.0
+pytest-asyncio>=0.24.0
