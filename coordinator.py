@@ -1,13 +1,13 @@
 from llama_index.core import Settings
 from llama_index.core.agent.react import ReActAgent
 from llama_index.core.tools import FunctionTool
-from typing import Tuple, Dict
+from typing import Tuple, Dict, List
 from movie_agent import MovieAgent
 from seating_agent import SeatingAgent
 from booking_agent import BookingAgent
 from preferences_agent import PreferencesAgent
 import re
-
+import random
 
 class CoordinatorAgent:
     def __init__(self):
@@ -47,14 +47,66 @@ class CoordinatorAgent:
             verbose=True
         )
 
+    def _format_name_response(self, name: str) -> str:
+        """Format name-related responses with variety"""
+        responses = [
+            f"Hi {name}! Welcome to our movie booking service.",
+            f"Hello {name}! Great to meet you.",
+            f"Welcome {name}! I'm here to help you book your perfect movie experience."
+        ]
+        return random.choice(responses)
+
+    def _format_email_response(self, name: str) -> str:
+        """Format email-related responses with variety"""
+        responses = [
+            f"Thank you, {name}!",
+            f"Perfect, {name}!",
+            f"Great, {name}!"
+        ]
+        return random.choice(responses)
+
+    def _validate_state_transition(self, current_state: str, next_state: str) -> bool:
+        """Validate if state transition is allowed"""
+        valid_transitions = {
+            "greeting": ["get_email"],
+            "get_email": ["preferences"],
+            "preferences": ["initial"],
+            "initial": ["movie_selection", "initial"],
+            "movie_selection": ["theater_selection", "movie_selection"],
+            "theater_selection": ["seat_selection", "theater_selection"],
+            "seat_selection": ["booking_confirmation", "seat_selection"],
+            "booking_confirmation": ["finished", "initial", "booking_confirmation"],
+            "finished": ["initial"]
+        }
+        return next_state in valid_transitions.get(current_state, [])
+
+    def _reset_booking_context(self, context: Dict) -> Dict:
+        """Reset booking-related context while preserving user info"""
+        preserved_keys = ["customer_name", "customer_email", "user_id", "favorite_genres", 
+                         "favorite_actors", "preferred_times"]
+        preserved_data = {k: context[k] for k in preserved_keys if k in context}
+        
+        context.clear()
+        context.update(preserved_data)
+        context["current_state"] = "initial"
+        return context
+
+    def _get_movie_title(self, movie_data: Dict) -> str:
+        """Safely extract movie title from movie data"""
+        return movie_data.get('Title', movie_data.get('title', 'Unknown Movie'))
+
+    def _validate_preferences(self, preferences: Dict) -> bool:
+        """Validate user preferences format"""
+        required_keys = ['favorite_genres', 'favorite_actors', 'preferred_times']
+        return all(key in preferences for key in required_keys) and \
+               all(isinstance(preferences[key], list) for key in required_keys)
     async def process_input(self, user_input: str, context: Dict) -> str:
         """Process user input based on current state"""
         try:
-            current_state = context.get("current_state", "greeting")
+            current_state = context["current_state"]
             response = ""
             new_state = current_state
 
-            # Get response from current state handler
             if current_state == "greeting":
                 response, new_state = await self.handle_greeting(user_input, context)
             elif current_state == "preferences":
@@ -72,32 +124,225 @@ class CoordinatorAgent:
             elif current_state == "booking_confirmation":
                 response, new_state = await self.handle_booking(user_input, context)
             elif current_state == "finished":
-                return "Have a great day!", "finished"
+                response = "Thank you for using our service! Have a great day!"
+                new_state = "finished"
             else:
-                return "I'm not sure how to handle this state. Let's start over.", "greeting"
-                
+                response = "I'm not sure how to handle this state. Let's start over."
+                new_state = "greeting"
+
             context["current_state"] = new_state
             return self._format_response_with_name(response, context)
-            
+
         except Exception as e:
             print(f"Error in process_input: {str(e)}")
             return f"An error occurred: {str(e)}. Let's try again."
+
     
 
     async def handle_greeting(self, user_input: str, context: Dict) -> Tuple[str, str]:
         """Handle initial greeting and get customer name"""
-        if "customer_name" not in context or not context["customer_name"]:
-            # Clean and extract name from input
-            name = self._extract_name(user_input)
+        try:
+            if "customer_name" not in context or not context["customer_name"]:
+                name = self._extract_name(user_input)
+                
+                if not name or len(name) < 2:
+                    return "Please tell me your name:", "greeting"
+                
+                context["customer_name"] = name
+                greeting = self._format_name_response(name)
+                return (
+                    f"{greeting} Please share your email address so I can send you the booking confirmation.",
+                    "get_email"
+                )
+                
+            return "Let's get to know your movie preferences!", "preferences"
             
-            if not name or len(name) < 2:
-                return "Please tell me your name:", "greeting"
-            
-            context["customer_name"] = name
+        except Exception as e:
+            print(f"Error in handle_greeting: {str(e)}")
+            return "Please tell me your name:", "greeting"
+
+    def _format_email_response(self, name: str) -> str:
+        """Format email-related responses with variety"""
+        responses = [
+            f"Thank you, {name}!",
+            f"Perfect, {name}!",
+            f"Great, {name}!"
+        ]
+        return random.choice(responses)
+
+    async def handle_email(self, user_input: str, context: Dict) -> Tuple[str, str]:
+        """Handle email collection"""
+        email = self._extract_email(user_input)
+        
+        if not email or not self._validate_email(email):
             return (
-                f"Nice to meet you, {context['customer_name']}! "
-                "Could you please provide your email address?",
+                "Please provide a valid email address "
+                "(e.g., username@domain.com):", 
                 "get_email"
+            )
+        
+        context["customer_email"] = email
+        name = context['customer_name']
+        response = self._format_email_response(name)
+        
+        return (
+            f"{response} Now, I'd love to learn about your movie preferences "
+            "so I can make better recommendations.",
+            "preferences"
+        )
+    
+
+    async def handle_preferences(self, user_input: str, context: Dict) -> Tuple[str, str]:
+        """Handle user preferences collection"""
+        if "preferences_state" not in context:
+            context["preferences_state"] = "genres"
+            return (
+                "What kinds of movies do you enjoy? (You can list multiple genres, "
+                "separated by commas, e.g., 'action, comedy, drama')",
+                "preferences"
+            )
+            
+        if context["preferences_state"] == "genres":
+            genres = [g.strip() for g in user_input.split(",")]
+            context["favorite_genres"] = genres
+            context["preferences_state"] = "actors"
+            return (
+                "Great choices! Who are some of your favorite actors? "
+                "(Separate names with commas)",
+                "preferences"
+            )
+            
+        if context["preferences_state"] == "actors":
+            actors = [a.strip() for a in user_input.split(",")]
+            context["favorite_actors"] = actors
+            context["preferences_state"] = "times"
+            return (
+                "What times do you usually prefer to watch movies? "
+                "(morning, afternoon, evening, or night - select multiple if applicable)",
+                "preferences"
+            )
+            
+        if context["preferences_state"] == "times":
+            preferred_times = [t.strip() for t in user_input.split(",")]
+            
+            # Save all preferences
+            preferences = {
+                "favorite_genres": context.get("favorite_genres", []),
+                "favorite_actors": context.get("favorite_actors", []),
+                "preferred_times": preferred_times,
+                "user_id": context.get("user_id", "user123")
+            }
+            
+            try:
+                # Get movie recommendations using the new method
+                recommendations = await self.get_movie_recommendations(preferences)
+                
+                # Format recommendations
+                if recommendations:
+                    rec_text = "\nBased on your preferences, you might enjoy these movies:\n"
+                    for i, movie in enumerate(recommendations, 1):
+                        title = movie.get('Title', movie.get('title', 'Unknown Title'))
+                        genre = movie.get('Genre', movie.get('genre', 'N/A'))
+                        year = movie.get('Year', movie.get('year', 'N/A'))
+                        rec_text += f"{i}. {title} ({year}) - {genre}\n"
+                else:
+                    rec_text = "\nI'll help you find a great movie based on your preferences."
+                
+                # Save preferences to database
+                await self.preferences_agent.update_preferences(
+                    context.get("user_id", "user123"),
+                    preferences
+                )
+                
+                return (
+                    f"Thanks for sharing your preferences!{rec_text}\n\n"
+                    "What movie would you like to watch today?",
+                    "initial"
+                )
+                
+            except Exception as e:
+                print(f"Error in handle_preferences: {str(e)}")
+                return (
+                    "Thanks for sharing your preferences! What movie would you like to watch today?",
+                    "initial"
+                )
+
+    async def handle_initial_state(self, user_input: str, context: Dict) -> Tuple[str, str]:
+        """Handle initial movie search with recommendations"""
+        try:
+            if user_input.lower() in ["what movies do you have", "show movies", "available movies", "list movies"]:
+                # Get trending movies
+                movies = await self.preferences_agent.get_trending_movies(10)
+                if not movies:  # Fall back to movie agent if no trending movies
+                    movies = await self.movie_agent.search_movies("popular movies 2024")
+                
+                if movies:
+                    context["available_movies"] = movies
+                    movie_list = "\n".join([
+                        f"{i+1}. {m.get('Title', m.get('title', ''))} "
+                        f"({m.get('Year', m.get('year', 'N/A'))}) - "
+                        f"{m.get('Genre', m.get('genre', 'N/A'))}"
+                        for i, m in enumerate(movies)
+                    ])
+                    return (
+                        f"Here are some popular movies currently showing:\n{movie_list}\n\n"
+                        "Which one would you like to watch? (Enter the number or search for another movie)",
+                        "movie_selection"
+                    )
+            
+            # Handle recommendation requests
+            if user_input.lower() in ["recommend", "suggestions", "what's good"]:
+                preferences = {
+                    "favorite_genres": context.get("favorite_genres", []),
+                    "favorite_actors": context.get("favorite_actors", []),
+                    "user_id": context.get("user_id", "user123")
+                }
+                recommendations = await self.get_movie_recommendations(preferences)
+                
+                if recommendations:
+                    context["available_movies"] = recommendations
+                    movie_list = "\n".join([
+                        f"{i+1}. {m.get('Title', m.get('title', ''))} "
+                        f"({m.get('Year', m.get('year', 'N/A'))}) - "
+                        f"{m.get('Genre', m.get('genre', 'N/A'))}"
+                        for i, m in enumerate(recommendations)
+                    ])
+                    return (
+                        f"Based on your preferences, here are some recommendations:\n{movie_list}\n\n"
+                        "Which movie would you like to watch? (Enter the number or type a movie name to search)",
+                        "movie_selection"
+                    )
+            
+            # Regular movie search
+            movies = await self.movie_agent.search_movies(user_input)
+            if movies:
+                context["available_movies"] = movies
+                movie_list = "\n".join([
+                    f"{i+1}. {m.get('Title', m.get('title', ''))} "
+                    f"({m.get('Year', m.get('year', 'N/A'))}) - "
+                    f"{m.get('Genre', m.get('genre', 'N/A'))}"
+                    for i, m in enumerate(movies)
+                ])
+                return (
+                    f"I found these movies:\n{movie_list}\n\n"
+                    "Which one would you like to watch? (Enter the number or search for another movie)",
+                    "movie_selection"
+                )
+            
+            return (
+                "I couldn't find any movies matching your search. You can:\n"
+                "1. Try searching with a different movie name\n"
+                "2. Type 'show movies' to see what's available\n"
+                "3. Type 'recommend' for personalized suggestions\n"
+                "What would you like to do?",
+                "initial"
+            )
+            
+        except Exception as e:
+            print(f"Error in handle_initial_state: {str(e)}")
+            return (
+                "I encountered an error while searching for movies. Please try again or type 'show movies' to see available options.",
+                "initial"
             )
         return "Let's get to know your movie preferences!", "preferences"
 
@@ -573,3 +818,24 @@ class CoordinatorAgent:
                 "An error occurred while processing your booking. Please try again.", 
                 "booking_confirmation"
             )
+    async def get_movie_recommendations(self, preferences: Dict) -> List[Dict]:
+        """Get movie recommendations based on preferences"""
+        try:
+            # First try preferences agent
+            recommendations = await self.preferences_agent.get_personalized_recommendations(
+                preferences.get("user_id", "user123")
+            )
+            
+            if not recommendations:
+                # Fall back to movie agent if preferences agent returns nothing
+                recommendations = await self.movie_agent.get_movie_suggestions({
+                    'favorite_genres': preferences.get('favorite_genres', []),
+                    'favorite_actors': preferences.get('favorite_actors', []),
+                    'recent_movies': preferences.get('recent_movies', [])
+                })
+            
+            return recommendations
+            
+        except Exception as e:
+            print(f"Error getting recommendations: {str(e)}")
+            return []
